@@ -22,37 +22,77 @@ type Runtime interface {
 // Api manages lifecycle and performs registration of services
 // by delegating to the concrete runtime's Register method.
 type Api struct {
-	runtime  Runtime
-	services []interface{}
+	runtimes map[Runtime][]interface{}
 }
 
-// New receives the concrete runtime and an optional list of services to register.
-func New(rt Runtime, svcs ...interface{}) *Api {
+// ApiOption configures an Api before creation.
+type ApiOption func(*Api)
+
+// New receives a map of runtimes to their associated services.
+func New(rts map[Runtime][]interface{}) *Api {
 	return &Api{
-		runtime:  rt,
-		services: svcs,
+		runtimes: rts,
 	}
 }
 
-// Register appends a service to the Api.
-// Services will be registered with the runtime when Start() is called.
-func (a *Api) Register(svc interface{}) {
-	a.services = append(a.services, svc)
+// NewWithOptions creates a new Api applying the provided options.
+func NewWithOptions(opts ...ApiOption) *Api {
+	a := &Api{
+		runtimes: map[Runtime][]interface{}{},
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(a)
+		}
+	}
+	return a
+}
+
+// WithRuntime returns an ApiOption that adds the runtime and associated services.
+func WithRuntime(rt Runtime, svcs ...interface{}) ApiOption {
+	return func(a *Api) {
+		if a.runtimes == nil {
+			a.runtimes = map[Runtime][]interface{}{}
+		}
+		a.runtimes[rt] = append(a.runtimes[rt], svcs...)
+	}
+}
+
+// AddRuntime adds a runtime and services to the Api.
+func (a *Api) AddRuntime(rt Runtime, svcs ...interface{}) {
+	if a.runtimes == nil {
+		a.runtimes = map[Runtime][]interface{}{}
+	}
+	a.runtimes[rt] = append(a.runtimes[rt], svcs...)
 }
 
 // Start blocks until SIGINT/SIGTERM then gracefully stops.
 func (a *Api) Start(ctx context.Context) error {
-	for _, svc := range a.services {
-		if err := a.runtime.Register(svc); err != nil {
-			return fmt.Errorf("register: %w", err)
+	for rt, svcs := range a.runtimes {
+		for _, svc := range svcs {
+			if err := rt.Register(svc); err != nil {
+				return fmt.Errorf("register: %w", err)
+			}
 		}
 	}
 
-	type result struct{ err error }
-	done := make(chan result, 1)
-	go func() { done <- result{a.runtime.Run()} }()
+	done := make(chan error, len(a.runtimes))
+	for rt := range a.runtimes {
+		go func(rt Runtime) {
+			done <- rt.Run()
+		}(rt)
+	}
 
-	// 3.  Wait for signal or runtime crash.
+	// Log runtime errors but don't stop others
+	go func() {
+		for i := 0; i < len(a.runtimes); i++ {
+			if err := <-done; err != nil {
+				slog.Error("runtime error", "error", err)
+			}
+		}
+	}()
+
+	// Wait for signal or context done.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	select {
@@ -60,14 +100,15 @@ func (a *Api) Start(ctx context.Context) error {
 		slog.Info("shutting down on signal")
 	case <-ctx.Done():
 		slog.Info("shutting down on context done")
-	case res := <-done:
-		if res.err != nil {
-			return res.err
-		}
 	}
 
-	// 4.  Graceful stop.
+	// Graceful stop.
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return a.runtime.Stop(sctx)
+	for rt := range a.runtimes {
+		if err := rt.Stop(sctx); err != nil {
+			slog.Error("error stopping runtime", "error", err)
+		}
+	}
+	return nil
 }
