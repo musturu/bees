@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	grpcapi "google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 )
 
 var (
@@ -23,11 +22,22 @@ type serviceInterceptors struct {
 	stream []grpcapi.StreamServerInterceptor
 }
 
+// Config defines gRPC runtime configuration.
+// All fields have JSON tags for unmarshaling from configuration.
+type Config struct {
+	Addr     string         `json:"addr"`
+	Services map[string]any `json:"services"`
+}
+
 // Runtime manages a gRPC server and service registration.
+// Config is embedded for unmarshaling from configuration.
+// All other fields are unexported implementation details.
 type Runtime struct {
+	Config
+
+	// Unexported implementation details
 	mu sync.RWMutex
 
-	addr       string
 	server     *grpcapi.Server
 	serverOpts []grpcapi.ServerOption
 
@@ -40,61 +50,19 @@ type Runtime struct {
 	running  bool
 }
 
-// Option configures the gRPC runtime.
-type Option func(*Runtime)
-
-// NewRuntime creates a new gRPC runtime with the given options.
-func NewRuntime(opts ...Option) *Runtime {
-	rt := &Runtime{
-		addr:                ":grpc",
-		serviceInterceptors: map[string]*serviceInterceptors{},
-	}
-
-	for _, opt := range opts {
-		opt(rt)
-	}
-
-	if rt.server == nil {
-		rt.server = grpcapi.NewServer(rt.serverOptions()...)
-	}
-
-	return rt
+// Init initializes the gRPC runtime after Config has been unmarshaled.
+func (rt *Runtime) Init() error {
+	rt.serviceInterceptors = map[string]*serviceInterceptors{}
+	rt.server = grpcapi.NewServer(rt.serverOptions()...)
+	return nil
 }
 
-// WithAddr sets the bind address for the gRPC server.
-func WithAddr(addr string) Option {
-	return func(rt *Runtime) {
-		rt.addr = addr
-	}
-}
+// ------------------------
+// Service registry helpers
+// ------------------------
 
-// WithServerOptions appends grpc.ServerOption values.
-func WithServerOptions(opts ...grpcapi.ServerOption) Option {
-	return func(rt *Runtime) {
-		rt.serverOpts = append(rt.serverOpts, opts...)
-	}
-}
-
-// WithUnaryInterceptors appends global unary interceptors.
-func WithUnaryInterceptors(interceptors ...grpcapi.UnaryServerInterceptor) Option {
-	return func(rt *Runtime) {
-		rt.unaryInterceptors = append(rt.unaryInterceptors, interceptors...)
-	}
-}
-
-// WithStreamInterceptors appends global stream interceptors.
-func WithStreamInterceptors(interceptors ...grpcapi.StreamServerInterceptor) Option {
-	return func(rt *Runtime) {
-		rt.streamInterceptors = append(rt.streamInterceptors, interceptors...)
-	}
-}
-
-// WithCredentials enables TLS using the provided credentials.
-func WithCredentials(creds credentials.TransportCredentials) Option {
-	return func(rt *Runtime) {
-		rt.serverOpts = append(rt.serverOpts, grpcapi.Creds(creds))
-	}
-}
+// NOTE: service factory registration and config-based service registration
+// have been moved to registry subpackages.
 
 // Register registers a service with the runtime.
 // Supports Service and []Service.
@@ -136,7 +104,7 @@ func (rt *Runtime) Run() error {
 		rt.server = grpcapi.NewServer(rt.serverOptions()...)
 	}
 
-	lis, err := net.Listen("tcp", rt.addr)
+	lis, err := net.Listen("tcp", rt.Config.Addr)
 	if err != nil {
 		rt.mu.Unlock()
 		return fmt.Errorf("grpc listen: %w", err)
@@ -146,7 +114,7 @@ func (rt *Runtime) Run() error {
 	rt.running = true
 	rt.mu.Unlock()
 
-	slog.Info("grpc runtime started", "addr", rt.addr)
+	slog.Info("grpc runtime started", "addr", rt.Config.Addr)
 
 	if err := rt.server.Serve(lis); err != nil {
 		if err == grpcapi.ErrServerStopped {

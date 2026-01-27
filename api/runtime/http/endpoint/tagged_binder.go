@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/textproto"
 	"reflect"
 	"strconv"
 	"strings"
@@ -48,7 +47,7 @@ func TaggedBinder[T any](r *http.Request, in *T) error {
 			continue
 		}
 
-		if tag := field.Tag.Get("query"); tag != "" {
+		if tag, ok := field.Tag.Lookup("query"); ok {
 			key := tag
 			if key == "" {
 				key = strings.ToLower(field.Name)
@@ -60,11 +59,12 @@ func TaggedBinder[T any](r *http.Request, in *T) error {
 			}
 		}
 
-		if tag := field.Tag.Get("header"); tag != "" {
+		if tag, ok := field.Tag.Lookup("header"); ok {
 			name := tag
 			if name == "" {
-				name = canonicalHeader(field.Name)
+				name = field.Name
 			}
+			name = http.CanonicalHeaderKey(name)
 			if value := headers.Get(name); value != "" {
 				if err := setScalar(fv, value); err != nil {
 					return fmt.Errorf("endpoint: header %s: %w", name, err)
@@ -72,12 +72,13 @@ func TaggedBinder[T any](r *http.Request, in *T) error {
 			}
 		}
 
-		if tag := field.Tag.Get("path"); tag != "" {
+		if tag, ok := field.Tag.Lookup("path"); ok {
 			key := tag
 			if key == "" {
 				key = field.Name
 			}
-			if pv := r.PathValue(key); pv != "" {
+			pv := r.PathValue(key)
+			if pv != "" {
 				if err := setScalar(fv, pv); err != nil {
 					return fmt.Errorf("endpoint: path %s: %w", key, err)
 				}
@@ -127,11 +128,4 @@ func setScalar(fv reflect.Value, raw string) error {
 		return fmt.Errorf("endpoint: unsupported field type %s", fv.Kind())
 	}
 	return nil
-}
-
-func canonicalHeader(name string) string {
-	if name == "" {
-		return ""
-	}
-	return textproto.CanonicalMIMEHeaderKey(name)
 }

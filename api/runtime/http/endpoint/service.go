@@ -31,6 +31,16 @@ func NewService(root string, opts ...Option) (*Service, error) {
 	return svc, nil
 }
 
+func (svc *Service) WithOpt(s ...Option) error {
+	for _, opt := range s {
+		err := opt(svc)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // WithMux overrides the internal mux.
 func WithMux(mux *http.ServeMux) Option {
 	return func(s *Service) error {
@@ -52,7 +62,7 @@ func WithChain(chain middleware.Middleware) Option {
 
 // EndpointOption registers a typed Endpoint into the service mux.
 // The Endpoint.MethodPattern may be either a path ("/foo") or a method + path ("GET /foo").
-func WithEndpoint[T any](ep *Endpoint[T]) Option {
+func WithEndpoint[T any, R any](ep *Endpoint[T, R]) Option {
 	return func(s *Service) error {
 		if s.mux == nil {
 			s.mux = http.NewServeMux()
