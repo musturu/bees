@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -25,10 +24,7 @@ func NewConfigParser() *ConfigParser {
 }
 
 // ParseAndValidate validates raw config data against a CUE schema and unmarshals into the target struct.
-// - schemaSource: either embedded CUE schema string (for runtimes) or file path (for services)
-// - isFile: true if schemaSource is a file path, false if it's an embedded string
-// - configData: raw config (YAML or JSON)
-// - target: pointer to struct to unmarshal into
+// Deprecated: Use ParseAndUnmarshal instead, which integrates with the central registry.
 func (cp *ConfigParser) ParseAndValidate(schemaSource string, isFile bool, configData []byte, target interface{}) error {
 	// Load the CUE schema
 	var schema *cue.Value
@@ -43,6 +39,17 @@ func (cp *ConfigParser) ParseAndValidate(schemaSource string, isFile bool, confi
 		return fmt.Errorf("failed to load schema: %w", err)
 	}
 
+	return cp.validateAndUnmarshal(schema, configData, target)
+}
+
+// ParseAndUnmarshal validates raw config data against a CUE value and unmarshals into the target struct.
+// If the CUE value is nil, validation is skipped and the config is unmarshaled directly.
+func (cp *ConfigParser) ParseAndUnmarshal(cueValidator *cue.Value, configData []byte, target interface{}) error {
+	return cp.validateAndUnmarshal(cueValidator, configData, target)
+}
+
+// validateAndUnmarshal is the core validation and unmarshaling logic.
+func (cp *ConfigParser) validateAndUnmarshal(cueValidator *cue.Value, configData []byte, target interface{}) error {
 	// Parse config from YAML/JSON to intermediate map
 	var configMap map[string]interface{}
 	if err := yaml.Unmarshal(configData, &configMap); err != nil {
@@ -58,6 +65,14 @@ func (cp *ConfigParser) ParseAndValidate(schemaSource string, isFile bool, confi
 		return fmt.Errorf("failed to marshal config to JSON: %w", err)
 	}
 
+	// If no validator provided, unmarshal directly
+	if cueValidator == nil {
+		if err := json.Unmarshal(configJSON, target); err != nil {
+			return fmt.Errorf("failed to unmarshal into target struct: %w", err)
+		}
+		return nil
+	}
+
 	// Load config into CUE value
 	configValue := cp.ctx.CompileBytes(configJSON)
 	if err := configValue.Err(); err != nil {
@@ -65,7 +80,7 @@ func (cp *ConfigParser) ParseAndValidate(schemaSource string, isFile bool, confi
 	}
 
 	// Unify config with schema for validation
-	unified := schema.Unify(configValue)
+	unified := cueValidator.Unify(configValue)
 	if err := unified.Err(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
@@ -124,15 +139,11 @@ func (cp *ConfigParser) loadSchemaFromFS(fsys fs.FS, filePath string) (*cue.Valu
 	return &val, nil
 }
 
-// cueValueToJSON converts a CUE value to JSON bytes.
+// cueValueToJSON converts a CUE value to JSON bytes using MarshalJSON.
 func (cp *ConfigParser) cueValueToJSON(val *cue.Value) ([]byte, error) {
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetEscapeHTML(false)
-
-	if err := val.Decode(encoder); err != nil {
+	data, err := val.MarshalJSON()
+	if err != nil {
 		return nil, fmt.Errorf("failed to encode CUE value to JSON: %w", err)
 	}
-
-	return buf.Bytes(), nil
+	return data, nil
 }
