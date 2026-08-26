@@ -108,6 +108,14 @@ func (rt *Runtime) registerServices(svcs ...HTTPService) error {
 		if len(stripPath) > 1 && stripPath[len(stripPath)-1] == '/' {
 			stripPath = stripPath[:len(stripPath)-1]
 		}
+		if stripPath == "/" {
+			// Root() == "/" has nothing to strip. Leaving stripPath as "/" makes
+			// http.StripPrefix drop the leading "/" from every request path, which
+			// the inner ServeMux's own path-canonicalization then "fixes" by
+			// redirecting back to the original URL -- an infinite redirect loop
+			// for any service mounted at the doc root.
+			stripPath = ""
+		}
 		mux.Handle(root, http.StripPrefix(stripPath, handler))
 		slog.Info("registered service", "root", root)
 	}

@@ -12,8 +12,9 @@ import (
 type Binder[T any] func(r *http.Request, in *T) error
 
 // WriteFunc is invoked after the handler finishes.
-// It receives both the handler output and any error returned by the handler.
-type WriteFunc func(ctx context.Context, w http.ResponseWriter, output any, handlerErr error) error
+// It receives both the handler output and any error returned by the handler,
+// plus the original request (e.g. to inspect headers when choosing how to render).
+type WriteFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, output any, handlerErr error) error
 
 // HttpError wraps an error with an explicit status code.
 type HttpError struct {
@@ -48,7 +49,7 @@ func DefaultBinder[T any](r *http.Request, in *T) error {
 // DefaultJSONWriter serializes successful outputs and handler errors into JSON.
 // Errors populate an “error“ field, and handler errors receive their status
 // code if they implement HttpError. Non-HttpError failures become 500 responses.
-func DefaultJSONWriter(ctx context.Context, w http.ResponseWriter, output any, handlerErr error) error {
+func DefaultJSONWriter(ctx context.Context, w http.ResponseWriter, r *http.Request, output any, handlerErr error) error {
 	w.Header().Set("Content-Type", "application/json")
 	if handlerErr != nil {
 		status := http.StatusInternalServerError
@@ -110,14 +111,19 @@ func (e *Endpoint[T, R]) Handler() http.HandlerFunc {
 		in := new(T)
 		if e.Bind != nil {
 			if err := e.Bind(r, in); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				status := http.StatusBadRequest
+				var httpErr HttpError
+				if errors.As(err, &httpErr) {
+					status = httpErr.StatusCode
+				}
+				http.Error(w, err.Error(), status)
 				return
 			}
 		}
-		if err := r.Body.Close(); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+		// Note: the request body is intentionally left open here. net/http
+		// closes it automatically once this handler returns, so Handle is
+		// free to keep reading it (e.g. a custom Bind that hands r.Body
+		// through unread, for streaming request bodies).
 		if e.Handle == nil {
 			http.Error(w, "endpoint handle is nil", http.StatusBadRequest)
 			return
@@ -128,7 +134,7 @@ func (e *Endpoint[T, R]) Handler() http.HandlerFunc {
 			writer = DefaultJSONWriter
 		}
 		// pass typed output as any to keep writer API unchanged
-		if err := writer(r.Context(), w, any(out), handleErr); err != nil {
+		if err := writer(r.Context(), w, r, any(out), handleErr); err != nil {
 			status := http.StatusInternalServerError
 			var httpErr HttpError
 			if errors.As(err, &httpErr) {
