@@ -3,9 +3,12 @@ module bees
 go 1.25.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/nats-io/nats.go v1.53.1
 	go.opentelemetry.io/otel v1.31.0
 	go.opentelemetry.io/otel/sdk v1.31.0
+	golang.org/x/oauth2 v0.36.0
 	google.golang.org/grpc v1.69.2
 )
 
