@@ -35,7 +35,7 @@ func Chain(middlewares ...Middleware) Middleware {
 //
 // )
 // handler = stack(router)
-// Logging will be called AFTER the ServeHTTP of router
+// Logging will be called BEFORE the ServeHTTP of router
 func BallAndChain(ball Middleware, chain ...Middleware) Middleware {
 	return func(next http.Handler) http.Handler {
 		for i := len(chain) - 1; i >= 0; i-- {
