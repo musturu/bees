@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+
+	"bees/api/runtime/http/middleware"
 )
 
 // Binder can be provided to populate an input from an *http.Request.
@@ -86,6 +88,7 @@ func DefaultJSONWriter(ctx context.Context, w http.ResponseWriter, r *http.Reque
 type Endpoint[T any, R any] struct {
 	MethodPattern string
 	Bind          Binder[T]                                   // optional
+	Middleware    middleware.Middleware                       // optional; wraps this endpoint only
 	Handle        func(ctx context.Context, in *T) (R, error) // required
 	Write         WriteFunc                                   // optional
 }
@@ -105,18 +108,27 @@ func NewJSONEndpoint[T any, R any](methodPattern string, handle func(ctx context
 	return ep
 }
 
-// Handler returns an http.HandlerFunc that runs bind → business logic → write.
+// Handler returns an http.HandlerFunc that runs bind → business logic → write,
+// wrapped in e.Middleware if set.
+//
+// A Bind error is rendered by the same writer as a handler error, as a 400
+// unless the error carries its own status via HttpError.
 func (e *Endpoint[T, R]) Handler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	writer := e.Write
+	if writer == nil {
+		writer = DefaultJSONWriter
+	}
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		in := new(T)
 		if e.Bind != nil {
 			if err := e.Bind(r, in); err != nil {
-				status := http.StatusBadRequest
 				var httpErr HttpError
-				if errors.As(err, &httpErr) {
-					status = httpErr.StatusCode
+				if !errors.As(err, &httpErr) {
+					err = HttpError{StatusCode: http.StatusBadRequest, Err: err}
 				}
-				http.Error(w, err.Error(), status)
+				if werr := writer(r.Context(), w, r, nil, err); werr != nil {
+					http.Error(w, werr.Error(), http.StatusInternalServerError)
+				}
 				return
 			}
 		}
@@ -129,10 +141,6 @@ func (e *Endpoint[T, R]) Handler() http.HandlerFunc {
 			return
 		}
 		out, handleErr := e.Handle(r.Context(), in)
-		writer := e.Write
-		if writer == nil {
-			writer = DefaultJSONWriter
-		}
 		// pass typed output as any to keep writer API unchanged
 		if err := writer(r.Context(), w, r, any(out), handleErr); err != nil {
 			status := http.StatusInternalServerError
@@ -142,5 +150,9 @@ func (e *Endpoint[T, R]) Handler() http.HandlerFunc {
 			}
 			http.Error(w, err.Error(), status)
 		}
+	})
+	if e.Middleware != nil {
+		return e.Middleware(h).ServeHTTP
 	}
+	return h
 }
