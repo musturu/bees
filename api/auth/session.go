@@ -57,25 +57,37 @@ func (c CookieConfig) cookieName() string {
 // both base64url. Used for both the session cookie (Session) and the
 // short-lived login-flow state cookie (authState) in oidc.go.
 func (c CookieConfig) signValue(v any) (string, error) {
+	return sign(c.SigningKey, v)
+}
+
+// parseValue verifies and decodes a value produced by signValue into v.
+func (c CookieConfig) parseValue(value string, v any) error {
+	return verify(c.SigningKey, value, v)
+}
+
+// sign HMAC-SHA256-signs the JSON encoding of v with key as
+// "<payload>.<sig>", both base64url.
+func sign(key []byte, v any) (string, error) {
 	payload, err := json.Marshal(v)
 	if err != nil {
 		return "", err
 	}
 	p := base64.RawURLEncoding.EncodeToString(payload)
-	mac := hmac.New(sha256.New, c.SigningKey)
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(p))
 	sig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	return p + "." + sig, nil
 }
 
-// parseValue verifies and decodes a value produced by signValue into v.
-func (c CookieConfig) parseValue(value string, v any) error {
+// verify checks a value produced by sign with key and decodes its payload
+// into v. Any malformed or tampered value is ErrInvalidSession.
+func verify(key []byte, value string, v any) error {
 	i := strings.LastIndex(value, ".")
 	if i < 0 {
 		return ErrInvalidSession
 	}
 	p, sig := value[:i], value[i+1:]
-	mac := hmac.New(sha256.New, c.SigningKey)
+	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(p))
 	want := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 	if subtle.ConstantTimeCompare([]byte(sig), []byte(want)) != 1 {
